@@ -2,7 +2,7 @@ import datetime
 import logging
 
 from airflow.decorators import dag
-from utils import etl_tasks
+from tasks import etl_tasks
 
 markdown_text = """
 ### ETL Process for Rain in Australia dataset.

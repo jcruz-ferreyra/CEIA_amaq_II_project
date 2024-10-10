@@ -1,8 +1,16 @@
+import datetime
+import logging
+import os
+
+import numpy as np
+import pandas as pd
 from airflow.decorators import task
 
-from . import etl_funs
+from .utils import etl_utils
 
 
+# task.virtualenv makes us to import again the globally imported libraries.
+# also it makes hard to access other python files like "utils.py".
 @task.virtualenv(
     task_id="get_raw_data",
     requirements=["kagglehub~=0.2"],
@@ -32,8 +40,6 @@ def load_raw_data(filepath):
     """
     Load the raw data to s3 bucket
     """
-    import os
-
     import awswrangler as wr
     import pandas as pd
 
@@ -56,6 +62,7 @@ def get_location_coords(filepath):
     """
     Load the raw data to s3 bucket
     """
+    import logging
     import re
 
     import awswrangler as wr
@@ -75,6 +82,8 @@ def get_location_coords(filepath):
             else:
                 raise e
 
+    logger = logging.getLogger("get_location_coords")
+
     bucket_name = "data"
     key = "raw/location_coords.csv"
     loc_filepath = f"s3://{bucket_name}/{key}"
@@ -89,13 +98,17 @@ def get_location_coords(filepath):
 
     df_existing_locations = pd.DataFrame(columns=["Location", "Lat", "Lon"])
     if check_if_exists_s3(bucket_name, key):
+        logger.info("Coords for locations already existing in S3 bucket")
         df_existing_locations = wr.s3.read_csv(path=loc_filepath)
         existing_locations = df_existing_locations["Location"]
 
         locations = [l for l in locations if l not in existing_locations]
 
         if len(locations) == 0:
+            logger.info(f"{len(locations)} locations to geolocate")
             return loc_filepath
+
+    logger.info(f"{len(locations)} locations to geolocate")
 
     country = "Australia"
 
@@ -110,7 +123,7 @@ def get_location_coords(filepath):
             lats.append(lat)
             lons.append(lon)
         except Exception as e:
-            print(f"Error retrieving coordinates for {location}: {e}")
+            logger.info(f"Error retrieving coordinates for {location}: {e}")
 
     df_locations = pd.DataFrame({"Location": locs, "Lat": lats, "Lon": lons})
 
@@ -132,11 +145,12 @@ def process_data(filepath, loc_filepath):
     df = wr.s3.read_csv(filepath)
 
     # Remove data with missing values in target column
-    df = df.dropna(subset=["RainTomorrow"])
+    target = ["RainTomorrow"]
+    df = df.dropna(subset=target)
 
     # Encode binary columns to indicators
     rain_columns = ["RainToday", "RainTomorrow"]
-    df = etl_funs.encode_binary_columns(df, rain_columns)
+    df = etl_utils.encode_binary_columns(df, rain_columns)
 
     # Add location coords as features
     df_locations = wr.s3.read_csv(loc_filepath)
@@ -144,11 +158,11 @@ def process_data(filepath, loc_filepath):
 
     # Encode date columns
     date_columns = ["Date"]
-    df = etl_funs.encode_date_columns(df, date_columns)
+    df = etl_utils.encode_date_columns(df, date_columns)
 
     # Encode direction columns
     dir_columns = ["WindGustDir", "WindDir9am", "WindDir3pm"]
-    df = etl_funs.encode_dir_columns(df, dir_columns)
+    df = etl_utils.encode_dir_columns(df, dir_columns)
 
     filename = os.path.basename(filepath)
     new_filepath = f"s3://data/process/{filename}"
@@ -167,8 +181,13 @@ def split_data(filepath):
     import numpy as np
     import pandas as pd
 
+    logger = logging.getLogger("get_location_coords")
+
     df = wr.s3.read_csv(filepath)
-    df_train, df_test = etl_funs.split_by_date(df)
+    df_train, df_test = etl_utils.split_by_date(df)
+
+    logger.info(f"Train set observations: {df_train.shape[0]}")
+    logger.info(f"Test set observations: {df_test.shape[0]}")
 
     filename_wo_ext = os.path.splitext(os.path.basename(filepath))[0]
 
@@ -351,8 +370,7 @@ def impute_missing(filepaths):
 @task(task_id="normalize_data")
 def normalize_data(filepaths):
     import awswrangler as wr
-    import numpy as np
-    import pandas as pd
+    import mlflow
     from sklearn.preprocessing import StandardScaler
 
     train_filepath = filepaths["train_filepath"]
@@ -387,5 +405,37 @@ def normalize_data(filepaths):
     wr.s3.to_csv(df=y_train, path=y_train_filepath, index=False)
     wr.s3.to_csv(df=X_test, path=X_test_filepath, index=False)
     wr.s3.to_csv(df=y_test, path=y_test_filepath, index=False)
+
+    # Log train and test set to mlflow
+    mlflow.set_tracking_uri("http://mlflow:5000")
+    experiment = mlflow.set_experiment("Rain in Australia")
+
+    mlflow.start_run(
+        run_name="ETL_run_" + datetime.datetime.today().strftime("%Y/%m/%d-%H:%M:%S"),
+        experiment_id=experiment.experiment_id,
+        tags={"experiment": "etl", "dataset": "Rain in Australia"},
+        log_system_metrics=True,
+    )
+
+    mlflow_df_train = mlflow.data.from_pandas(
+        pd.concat([X_train, y_train], axis=1),
+        source="https://www.kaggle.com/datasets/jsphyg/weather-dataset-rattle-package",
+        targets=target[0],
+        name="rain_australia_train",
+    )
+    mlflow.log_input(mlflow_df_train, context="Train Data")
+
+    mlflow_df_test = mlflow.data.from_pandas(
+        pd.concat([X_test, y_test], axis=1),
+        source="https://www.kaggle.com/datasets/jsphyg/weather-dataset-rattle-package",
+        targets=target[0],
+        name="rain_australia_test",
+    )
+    mlflow.log_input(mlflow_df_test, context="Test Data")
+
+    mlflow.log_param("Train observations", X_train.shape[0])
+    mlflow.log_param("Test observations", X_test.shape[0])
+
+    mlflow.end_run()
 
     return
