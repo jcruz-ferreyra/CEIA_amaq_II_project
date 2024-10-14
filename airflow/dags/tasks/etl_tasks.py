@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from airflow.decorators import task
 
-from .utils import etl_utils
+from . import etl_utils
 
 
 # task.virtualenv makes us to import again the globally imported libraries.
@@ -62,6 +62,7 @@ def get_location_coords(filepath):
     """
     Load the raw data to s3 bucket
     """
+    import json
     import logging
     import re
 
@@ -131,14 +132,37 @@ def get_location_coords(filepath):
 
     wr.s3.to_csv(df=df_locations, path=loc_filepath, index=False)
 
+    # Save information of the dataset
+    client = boto3.client("s3")
+
+    info_dict = {}
+    try:
+        client.head_object(Bucket=bucket_name, Key="info/data_info.json")
+        result = client.get_object(Bucket=bucket_name, Key="info/data_info.json")
+        text = result["Body"].read().decode()
+        info_dict = json.loads(text)
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] != "404":
+            # Something else has gone wrong.
+            raise e
+
+    info_dict["loc_filepath"] = loc_filepath
+
+    info_string = json.dumps(info_dict, indent=2)
+
+    client.put_object(Bucket=bucket_name, Key="info/data_info.json", Body=info_string)
+
     return loc_filepath
 
 
 @task(task_id="process_data")
 def process_data(filepath, loc_filepath):
+    import json
     import os
 
     import awswrangler as wr
+    import boto3
+    import botocore
     import numpy as np
     import pandas as pd
 
@@ -149,8 +173,8 @@ def process_data(filepath, loc_filepath):
     df = df.dropna(subset=target)
 
     # Encode binary columns to indicators
-    rain_columns = ["RainToday", "RainTomorrow"]
-    df = etl_utils.encode_binary_columns(df, rain_columns)
+    binary_columns = ["RainToday"]
+    df = etl_utils.encode_binary_columns(df, binary_columns + target)
 
     # Add location coords as features
     df_locations = wr.s3.read_csv(loc_filepath)
@@ -168,6 +192,31 @@ def process_data(filepath, loc_filepath):
     new_filepath = f"s3://data/process/{filename}"
 
     wr.s3.to_csv(df=df, path=new_filepath, index=False)
+
+    # Save information of the dataset
+    client = boto3.client("s3")
+
+    bucket_name = "data"
+
+    info_dict = {}
+    try:
+        client.head_object(Bucket=bucket_name, Key="info/data_info.json")
+        result = client.get_object(Bucket=bucket_name, Key="info/data_info.json")
+        text = result["Body"].read().decode()
+        info_dict = json.loads(text)
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] != "404":
+            # Something else has gone wrong.
+            raise e
+
+    info_dict["binary_columns"] = binary_columns
+    info_dict["date_columns"] = date_columns
+    info_dict["dir_columns"] = dir_columns
+
+    info_string = json.dumps(info_dict, indent=2)
+
+    client.put_object(Bucket=bucket_name, Key="info/data_info.json", Body=info_string)
+    #
 
     return new_filepath
 
@@ -207,7 +256,11 @@ def split_data(filepath):
 
 @task(task_id="reduce_skeweness")
 def reduce_skeweness(filepaths):
+    import json
+
     import awswrangler as wr
+    import boto3
+    import botocore
     import numpy as np
     import pandas as pd
 
@@ -230,6 +283,29 @@ def reduce_skeweness(filepaths):
         "train_filepath": train_filepath,
         "test_filepath": test_filepath,
     }
+
+    # Save information of the dataset
+    client = boto3.client("s3")
+
+    bucket_name = "data"
+
+    info_dict = {}
+    try:
+        client.head_object(Bucket=bucket_name, Key="info/data_info.json")
+        result = client.get_object(Bucket=bucket_name, Key="info/data_info.json")
+        text = result["Body"].read().decode()
+        info_dict = json.loads(text)
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] != "404":
+            # Something else has gone wrong.
+            raise e
+
+    info_dict["right_skewed_columns"] = right_skewed_columns
+
+    info_string = json.dumps(info_dict, indent=2)
+
+    client.put_object(Bucket=bucket_name, Key="info/data_info.json", Body=info_string)
+    #
 
     return filepaths
 
@@ -257,7 +333,11 @@ def _cap_outliers(x, limits):
 
 @task(task_id="cap_outliers")
 def cap_outliers(filepaths):
+    import json
+
     import awswrangler as wr
+    import boto3
+    import botocore
     import numpy as np
     import pandas as pd
 
@@ -286,14 +366,40 @@ def cap_outliers(filepaths):
         "Temp3pm",
     ]
 
+    numeric_columns_limits = {}
     for feature in numeric_columns:
         limits = _get_outlier_thresh(df_train[feature])
         df_train[feature] = _cap_outliers(df_train[feature], limits)
 
         df_test[feature] = _cap_outliers(df_test[feature], limits)
 
+        numeric_columns_limits[feature] = limits
+
     wr.s3.to_csv(df=df_train, path=train_filepath, index=False)
     wr.s3.to_csv(df=df_test, path=test_filepath, index=False)
+
+    # Save information of the dataset
+    client = boto3.client("s3")
+
+    bucket_name = "data"
+
+    info_dict = {}
+    try:
+        client.head_object(Bucket=bucket_name, Key="info/data_info.json")
+        result = client.get_object(Bucket=bucket_name, Key="info/data_info.json")
+        text = result["Body"].read().decode()
+        info_dict = json.loads(text)
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] != "404":
+            # Something else has gone wrong.
+            raise e
+
+    info_dict["numeric_columns_limits"] = numeric_columns_limits
+
+    info_string = json.dumps(info_dict, indent=2)
+
+    client.put_object(Bucket=bucket_name, Key="info/data_info.json", Body=info_string)
+    #
 
     filepaths = {
         "train_filepath": train_filepath,
@@ -305,7 +411,11 @@ def cap_outliers(filepaths):
 
 @task(task_id="impute_missing")
 def impute_missing(filepaths):
+    import json
+
     import awswrangler as wr
+    import boto3
+    import botocore
     import numpy as np
     import pandas as pd
     from sklearn.impute import SimpleImputer
@@ -364,12 +474,39 @@ def impute_missing(filepaths):
         "test_filepath": test_filepath,
     }
 
+    # Save information of the dataset
+    client = boto3.client("s3")
+
+    bucket_name = "data"
+
+    info_dict = {}
+    try:
+        client.head_object(Bucket=bucket_name, Key="info/data_info.json")
+        result = client.get_object(Bucket=bucket_name, Key="info/data_info.json")
+        text = result["Body"].read().decode()
+        info_dict = json.loads(text)
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] != "404":
+            # Something else has gone wrong.
+            raise e
+
+    info_dict["features"] = features
+
+    info_string = json.dumps(info_dict, indent=2)
+
+    client.put_object(Bucket=bucket_name, Key="info/data_info.json", Body=info_string)
+    #
+
     return filepaths
 
 
 @task(task_id="normalize_data")
 def normalize_data(filepaths):
+    import json
+
     import awswrangler as wr
+    import boto3
+    import botocore
     import mlflow
     from sklearn.preprocessing import StandardScaler
 
@@ -392,14 +529,17 @@ def normalize_data(filepaths):
     X_train_arr = std_scaler.fit_transform(X_train)
     X_test_arr = std_scaler.transform(X_test)
 
+    # Save scaled dataframes
     X_train = pd.DataFrame(X_train_arr, columns=X_train.columns)
     X_test = pd.DataFrame(X_test_arr, columns=X_test.columns)
 
-    # Save scaled dataframes
-    X_train_filepath = train_filepath.replace(".csv", "_X.csv")
-    y_train_filepath = train_filepath.replace(".csv", "_y.csv")
-    X_test_filepath = test_filepath.replace(".csv", "_X.csv")
-    y_test_filepath = test_filepath.replace(".csv", "_y.csv")
+    train_filename_wo_ext = os.path.splitext(os.path.basename(train_filepath))[0]
+    test_filename_wo_ext = os.path.splitext(os.path.basename(test_filepath))[0]
+
+    X_train_filepath = f"s3://data/final/{train_filename_wo_ext}_X.csv"
+    y_train_filepath = f"s3://data/final/{train_filename_wo_ext}_y.csv"
+    X_test_filepath = f"s3://data/final/{test_filename_wo_ext}_X.csv"
+    y_test_filepath = f"s3://data/final/{test_filename_wo_ext}_y.csv"
 
     wr.s3.to_csv(df=X_train, path=X_train_filepath, index=False)
     wr.s3.to_csv(df=y_train, path=y_train_filepath, index=False)
@@ -437,5 +577,30 @@ def normalize_data(filepaths):
     mlflow.log_param("Test observations", X_test.shape[0])
 
     mlflow.end_run()
+
+    # Save information of the dataset
+    client = boto3.client("s3")
+
+    bucket_name = "data"
+
+    info_dict = {}
+    try:
+        client.head_object(Bucket=bucket_name, Key="info/data_info.json")
+        result = client.get_object(Bucket=bucket_name, Key="info/data_info.json")
+        text = result["Body"].read().decode()
+        info_dict = json.loads(text)
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] != "404":
+            # Something else has gone wrong.
+            raise e
+  
+    info_dict["std_scaler_scale"] = std_scaler.scale_.tolist()
+    info_dict["std_scaler_mean"] = std_scaler.mean_.tolist()
+    info_dict["std_scaler_var"] = std_scaler.var_.tolist()
+
+    info_string = json.dumps(info_dict, indent=2)
+
+    client.put_object(Bucket=bucket_name, Key="info/data_info.json", Body=info_string)
+    #
 
     return
