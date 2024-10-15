@@ -1,6 +1,2 @@
 mlflow[extras]~=2.10
 boto3~=1.34
-pandas~=2.0
-numpy~=1.24
-awswrangler~=3.6
-scikit-learn~=1.3
