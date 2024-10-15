@@ -1,18 +1,16 @@
 import json
 import pickle
-from datetime import date
-from typing import Literal
-
-import awswrangler as wr
 import boto3
 import mlflow
+
 import numpy as np
 import pandas as pd
-from fastapi import BackgroundTasks, Body, FastAPI
-from fastapi.encoders import jsonable_encoder
+
+from typing import Literal
+from fastapi import FastAPI, Body, BackgroundTasks
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
-from sklearn.preprocessing import StandardScaler
 from typing_extensions import Annotated
 
 
@@ -31,7 +29,7 @@ def load_model(model_name: str, alias: str):
 
     try:
         # Load the trained model from MLflow
-        mlflow.set_tracking_uri("http://mlflow:5000")
+        mlflow.set_tracking_uri('http://mlflow:5000')
         client_mlflow = mlflow.MlflowClient()
 
         model_data_mlflow = client_mlflow.get_model_version_by_alias(model_name, alias)
@@ -39,28 +37,29 @@ def load_model(model_name: str, alias: str):
         version_model_ml = int(model_data_mlflow.version)
     except:
         # If there is no registry in MLflow, open the default model
-        file_ml = open("/app/files/model.pkl", "rb")
+        file_ml = open('/app/files/model.pkl', 'rb')
         model_ml = pickle.load(file_ml)
         file_ml.close()
         version_model_ml = 0
 
     try:
         # Load information of the ETL pipeline from S3
-        s3 = boto3.client("s3")
+        s3 = boto3.client('s3')
 
-        bucket_name = "data"
-
-        s3.head_object(Bucket=bucket_name, Key="info/data_info.json")
-        result_s3 = s3.get_object(Bucket=bucket_name, Key="info/data_info.json")
+        s3.head_object(Bucket='data', Key='data_info/data.json')
+        result_s3 = s3.get_object(Bucket='data', Key='data_info/data.json')
         text_s3 = result_s3["Body"].read().decode()
-        info_dict = json.loads(text_s3)
+        data_dictionary = json.loads(text_s3)
+
+        data_dictionary["standard_scaler_mean"] = np.array(data_dictionary["standard_scaler_mean"])
+        data_dictionary["standard_scaler_std"] = np.array(data_dictionary["standard_scaler_std"])
     except:
         # If data dictionary is not found in S3, load it from local file
-        file_s3 = open("/app/files/data.json", "r")
-        info_dict = json.load(file_s3)
+        file_s3 = open('/app/files/data.json', 'r')
+        data_dictionary = json.load(file_s3)
         file_s3.close()
 
-    return model_ml, version_model_ml, info_dict
+    return model_ml, version_model_ml, data_dictionary
 
 
 def check_model():
@@ -74,14 +73,14 @@ def check_model():
     """
 
     global model
-    global info_dict
+    global data_dict
     global version_model
 
     try:
-        model_name = "rain_australia_model_prod"
+        model_name = "heart_disease_model_prod"
         alias = "champion"
 
-        mlflow.set_tracking_uri("http://mlflow:5000")
+        mlflow.set_tracking_uri('http://mlflow:5000')
         client = mlflow.MlflowClient()
 
         # Check in the model registry if the version of the champion has changed
@@ -91,7 +90,7 @@ def check_model():
         # If the versions are not the same
         if new_version_model != version_model:
             # Load the new model and update version and data dictionary
-            model, version_model, info_dict = load_model(model_name, alias)
+            model, version_model, data_dict = load_model(model_name, alias)
 
     except:
         # If an error occurs during the process, pass silently
@@ -100,210 +99,110 @@ def check_model():
 
 class ModelInput(BaseModel):
     """
-    Define data structure for predictions in Rain Australia dataset.
+    Input schema for the heart disease prediction model.
+
+    This class defines the input fields required by the heart disease prediction model along with their descriptions
+    and validation constraints.
+
+    :param age: Age of the patient (0 to 150).
+    :param sex: Sex of the patient. 1: male; 0: female.
+    :param cp: Chest pain type. 1: typical angina; 2: atypical angina; 3: non-anginal pain; 4: asymptomatic.
+    :param trestbps: Resting blood pressure in mm Hg on admission to the hospital (90 to 220).
+    :param chol: Serum cholestoral in mg/dl (110 to 600).
+    :param fbs: Fasting blood sugar. 1: >120 mg/dl; 0: <120 mg/dl.
+    :param restecg: Resting electrocardiographic results. 0: normal; 1: having ST-T wave abnormality; 2: showing
+                    probable or definite left ventricular hypertrophy.
+    :param thalach: Maximum heart rate achieved (beats per minute) (50 to 210).
+    :param exang: Exercise induced angina. 1: yes; 0: no.
+    :param oldpeak: ST depression induced by exercise relative to rest (0.0 to 7.0).
+    :param slope: The slope of the peak exercise ST segment. 1: upsloping; 2: flat; 3: downsloping.
+    :param ca: Number of major vessels colored by flourosopy (0 to 3).
+    :param thal: Thalassemia disease. 3: normal; 6: fixed defect; 7: reversable defect.
     """
 
-    Date: date = Field(
-        description="Fecha de los datos.",
-    )
-    Location: Literal[
-        "Adelaide",
-        "Albany",
-        "Albury",
-        "AliceSprings",
-        "BadgerysCreek",
-        "Ballarat",
-        "Bendigo",
-        "Brisbane",
-        "Cairns",
-        "Canberra",
-        "Cobar",
-        "CoffsHarbour",
-        "Dartmoor",
-        "Darwin",
-        "GoldCoast",
-        "Hobart",
-        "Katherine",
-        "Launceston",
-        "Melbourne",
-        "MelbourneAirport",
-        "Mildura",
-        "Moree",
-        "MountGambier",
-        "MountGinini",
-        "Newcastle",
-        "Nhil",
-        "NorahHead",
-        "NorfolkIsland",
-        "Nuriootpa",
-        "PearceRAAF",
-        "Penrith",
-        "Perth",
-        "PerthAirport",
-        "Portland",
-        "Richmond",
-        "Sale",
-        "SalmonGums",
-        "Sydney",
-        "SydneyAirport",
-        "Townsville",
-        "Tuggeranong",
-        "Uluru",
-        "WaggaWagga",
-        "Walpole",
-        "Watsonia",
-        "Williamtown",
-        "Witchcliffe",
-        "Wollongong",
-        "Woomera",
-    ] = Field(
-        description="Ubicación de la estación meteorológica.",
-    )
-    MinTemp: float = Field(
-        description="Temperatura mínima de hoy.",
-        ge=-10,
-        le=50,
-    )
-    MaxTemp: float = Field(
-        description="Temperatura máxima de hoy.",
-        ge=-20,
-        le=70,
-    )
-    Rainfall: float = Field(
-        description="Cantidad de lluvia caída hoy.",
-    )
-    Evaporation: float = Field(
-        description="Evaporación hoy.",
-    )
-    Sunshine: float = Field(
-        description="Horas de sol hoy.",
+    age: int = Field(
+        description="Age of the patient",
         ge=0,
-        le=24,
+        le=150,
     )
-    WindGustDir: Literal[
-        "E",
-        "ENE",
-        "ESE",
-        "N",
-        "NE",
-        "NNE",
-        "NNW",
-        "NW",
-        "S",
-        "SE",
-        "SSE",
-        "SSW",
-        "SW",
-        "W",
-        "WNW",
-        "WSW",
-    ] = Field(
-        description="Dirección de las ráfagas.",
-    )
-    WindGustSpeed: float = Field(
-        description="Velocidad máxima de las ráfagas hoy.",
-    )
-    WindDir9am: Literal[
-        "E",
-        "ENE",
-        "ESE",
-        "N",
-        "NE",
-        "NNE",
-        "NNW",
-        "NW",
-        "S",
-        "SE",
-        "SSE",
-        "SSW",
-        "SW",
-        "W",
-        "WNW",
-        "WSW",
-    ] = Field(
-        description="Dirección del viento a las 9am.",
-    )
-    WindDir3pm: Literal[
-        "E",
-        "ENE",
-        "ESE",
-        "N",
-        "NE",
-        "NNE",
-        "NNW",
-        "NW",
-        "S",
-        "SE",
-        "SSE",
-        "SSW",
-        "SW",
-        "W",
-        "WNW",
-        "WSW",
-    ] = Field(
-        description="Dirección del viento a las 3pm.",
-    )
-    WindSpeed9am: float = Field(
-        description="Velocidad del viento a las 9am.",
-    )
-    WindSpeed3pm: float = Field(
-        description="Velocidad del viento a las 3pm.",
-    )
-    Humidity9am: float = Field(
-        description="Humedad a las 9am.",
-    )
-    Humidity3pm: float = Field(
-        description="Humedad a las 3pm.",
-    )
-    Pressure9am: float = Field(
-        description="Presión a las 9am.",
-    )
-    Pressure3pm: float = Field(
-        description="Presión a las 3pm.",
-    )
-    Cloud9am: float = Field(
-        description="Cobertura de nubes a las 9am.",
-    )
-    Cloud3pm: float = Field(
-        description="Cobertura de nubes a las 3pm.",
-    )
-    Temp9am: float = Field(
-        description="Temperatura a las 9am.",
-    )
-    Temp3pm: float = Field(
-        description="Temperatura a las 3pm.",
-    )
-    RainToday: float = Field(
-        description="Llovio hoy? 1: si llovió, 0: no llovió.",
+    sex: int = Field(
+        description="Sex of the patient. 1: male; 0: female",
         ge=0,
+        le=1,
+    )
+    cp: int = Field(
+        description="Chest pain type. 1: typical angina; 2: atypical angina, 3: non-anginal pain; 4: asymptomatic",
+        ge=1,
+        le=4,
+    )
+    trestbps: float = Field(
+        description="Resting blood pressure in mm Hg on admission to the hospital",
+        ge=90,
+        le=220,
+    )
+    chol: float = Field(
+        description="Serum cholestoral in mg/dl",
+        ge=110,
+        le=600,
+    )
+    fbs: int = Field(
+        description="Fasting blood sugar. 1: >120 mg/dl; 0: <120 mg/dl",
+        ge=0,
+        le=1,
+    )
+    restecg: int = Field(
+        description="Resting electrocardiographic results. 0: normal; 1:  having ST-T wave abnormality (T wave "
+                    "inversions and/or ST elevation or depression of > 0.05 mV), 2: showing probable or definite "
+                    "left ventricular hypertrophy by Estes' criteria",
+        ge=0,
+        le=2,
+    )
+    thalach: float = Field(
+        description="Maximum heart rate achieved (beats per minute)",
+        ge=50,
+        le=210,
+    )
+    exang: int = Field(
+        description="Exercise induced angina. 1: yes; 0: no",
+        ge=0,
+        le=1,
+    )
+    oldpeak: float = Field(
+        description="ST depression induced by exercise relative to rest",
+        ge=0.0,
+        le=7.0,
+    )
+    slope: int = Field(
+        description="The slope of the peak exercise ST segment .1: upsloping; 2: flat, 3: downsloping",
+        ge=1,
+        le=3,
+    )
+    ca: int = Field(
+        description="Number of major vessels colored by flourosopy",
+        ge=0,
+        le=3,
+    )
+    thal: Literal[3, 6, 7] = Field(
+        description="Thalassemia disease. 3: normal; 6: fixed defect; 7: reversable defect",
     )
 
     model_config = {
         "json_schema_extra": {
-            "ejemplos": [
+            "examples": [
                 {
-                    "Date": "2021-01-01",
-                    "Location": "Sydney",
-                    "MinTemp": 15.0,
-                    "MaxTemp": 25.0,
-                    "Rainfall": 0.0,
-                    "Evaporation": 5.0,
-                    "Sunshine": 10.0,
-                    "WindGustdir": "N",
-                    "WindGustSpeed": 30.0,
-                    "WindDir9am": "N",
-                    "WindDir3pm": "N",
-                    "WindSpeed9am": 10.0,
-                    "WindSpeed3pm": 15.0,
-                    "Humidity9am": 50.0,
-                    "Humidity3pm": 60.0,
-                    "Pressure9am": 1010.0,
-                    "Pressure3pm": 1005.0,
-                    "Cloud9am": 5.0,
-                    "Cloud3pm": 5.0,
-                    "Temp9am": 20.0,
-                    "Temp3pm": 23.0,
-                    "RainToday": 0,
+                    "age": 67,
+                    "sex": 1,
+                    "cp": 4,
+                    "trestbps": 160.0,
+                    "chol": 286.0,
+                    "fbs": 0,
+                    "restecg": 2,
+                    "thalach": 108.0,
+                    "exang": 1,
+                    "oldpeak": 1.5,
+                    "slope": 2,
+                    "ca": 3,
+                    "thal": 3,
                 }
             ]
         }
@@ -312,11 +211,19 @@ class ModelInput(BaseModel):
 
 class ModelOutput(BaseModel):
     """
-    API output model.
+    Output schema for the heart disease prediction model.
+
+    This class defines the output fields returned by the heart disease prediction model along with their descriptions
+    and possible values.
+
+    :param int_output: Output of the model. True if the patient has a heart disease.
+    :param str_output: Output of the model in string form. Can be "Healthy patient" or "Heart disease detected".
     """
 
-    int_output: int = Field(description="Output of the model. True if tomorrow will rain.")
-    str_output: Literal["Tomorrow will probably rain.", "Tomorrow won't probably rain"] = Field(
+    int_output: bool = Field(
+        description="Output of the model. True if the patient has a heart disease",
+    )
+    str_output: Literal["Healthy patient", "Heart disease detected"] = Field(
         description="Output of the model in string form",
     )
 
@@ -324,8 +231,8 @@ class ModelOutput(BaseModel):
         "json_schema_extra": {
             "examples": [
                 {
-                    "int_output": 1,
-                    "str_output": "Tomorrow will probably rain.",
+                    "int_output": True,
+                    "str_output": "Heart disease detected",
                 }
             ]
         }
@@ -333,7 +240,7 @@ class ModelOutput(BaseModel):
 
 
 # Load the model before start
-model, version_model, info_dict = load_model("rain_australia_model_prod", "champion")
+model, version_model, data_dict = load_model("heart_disease_model_prod", "champion")
 
 app = FastAPI()
 
@@ -341,15 +248,11 @@ app = FastAPI()
 @app.get("/")
 async def read_root():
     """
-    Root endpoint of the Rain Autralia Detector API.
+    Root endpoint of the Heart Disease Detector API.
 
     This endpoint returns a JSON response with a welcome message to indicate that the API is running.
     """
-    return JSONResponse(
-        content=jsonable_encoder(
-            {"message": "Welcome to the Rain Autralia Detector API"}
-        )
-    )
+    return JSONResponse(content=jsonable_encoder({"message": "Welcome to the Heart Disease Detector API"}))
 
 
 @app.post("/predict/", response_model=ModelOutput)
@@ -358,142 +261,49 @@ def predict(
         ModelInput,
         Body(embed=True),
     ],
-    background_tasks: BackgroundTasks,
+    background_tasks: BackgroundTasks
 ):
     """
-    Endpoint for predicting Rain Autralia.
+    Endpoint for predicting heart disease.
 
-    This endpoint receives features related to a patient's health and predicts whether tomorrow will rain in some
-    australian city or not using a trained model. It returns the prediction result in both integer and string formats.
+    This endpoint receives features related to a patient's health and predicts whether the patient has heart disease
+    or not using a trained model. It returns the prediction result in both integer and string formats.
     """
-    import logging
-
-    def encode_date_columns(df, columns):
-        for col in columns:
-            df[col] = pd.to_datetime(df[col])
-
-            df["DayOfYear"] = df[col].dt.dayofyear
-            df["DaysInYear"] = df[col].dt.is_leap_year.apply(
-                lambda leap: 366 if leap else 365
-            )
-
-            df["Angle"] = 2 * np.pi * (df["DayOfYear"] - 1) / (df["DaysInYear"])
-
-            df["DayCos"] = np.cos(df["Angle"])
-            df["DaySin"] = np.sin(df["Angle"])
-
-            df = df.drop(columns=["DayOfYear", "DaysInYear", "Angle"])
-
-        return df
-
-    def encode_dir_columns(df, columns):
-        dirs = [
-            "E",
-            "ENE",
-            "NE",
-            "NNE",
-            "N",
-            "NNW",
-            "NW",
-            "WNW",
-            "W",
-            "WSW",
-            "SW",
-            "SSW",
-            "S",
-            "SSE",
-            "SE",
-            "ESE",
-        ]
-        angles = np.radians(np.arange(0, 360, 22.5))
-        mapping_dict = {d: a for (d, a) in zip(dirs, angles)}
-
-        for col in columns:
-            df[f"{col}Angle"] = df[col].map(mapping_dict)
-
-            df[f"{col}Cos"] = np.cos(df[f"{col}Angle"])
-            df[f"{col}Sin"] = np.sin(df[f"{col}Angle"])
-
-            df = df.drop(columns=f"{col}Angle")
-
-        return df
 
     # Extract features from the request and convert them into a list and dictionary
     features_list = [*features.dict().values()]
     features_key = [*features.dict().keys()]
 
     # Convert features into a pandas DataFrame
-    features_df = pd.DataFrame(
-        np.array(features_list).reshape([1, -1]), columns=features_key
-    )
+    features_df = pd.DataFrame(np.array(features_list).reshape([1, -1]), columns=features_key)
 
-    logger = logging.getLogger()
+    # Process categorical features
+    for categorical_col in data_dict["categorical_columns"]:
+        features_df[categorical_col] = features_df[categorical_col].astype(int)
+        categories = data_dict["categories_values_per_categorical"][categorical_col]
+        features_df[categorical_col] = pd.Categorical(features_df[categorical_col], categories=categories)
 
-    logger.info(features_df.columns)
+    # Convert categorical features into dummy variables
+    features_df = pd.get_dummies(data=features_df,
+                                 columns=data_dict["categorical_columns"],
+                                 drop_first=True)
 
-    logger.info(features_df.head(1))
+    # Reorder DataFrame columns
+    features_df = features_df[data_dict["columns_after_dummy"]]
 
-    # Add location coords as features (should improve path hardcoding)
-    df_locations = wr.s3.read_csv(info_dict["loc_filepath"])
-    features_df = pd.merge(features_df, df_locations, how="left", on="Location")
-
-    # Encode date columns
-    date_columns = info_dict["date_columns"]
-    features_df = encode_date_columns(features_df, date_columns)
-
-    # Encode direction columns
-    dir_columns = info_dict["dir_columns"]
-    features_df = encode_dir_columns(features_df, dir_columns)
-
-    # Apply skeweness reducing process
-    right_skewed_columns = info_dict["right_skewed_columns"]
-    logger.info(right_skewed_columns)
-    for col in right_skewed_columns:
-        logger.info(features_df[col] + 1)
-        features_df[f"{col}Log"] = np.log(features_df[col].astype(float) + 1)
-
-    # Cap outliers
-    def _cap_outliers(x, limits):
-        low_limit, up_limit = limits
-
-        is_over_limits = x > up_limit
-        x[is_over_limits] = up_limit
-
-        is_under_limits = x < low_limit
-        x[is_under_limits] = low_limit
-
-        return x
-
-    numeric_columns_limits = info_dict["numeric_columns_limits"]
-    for feature, limits in numeric_columns_limits.items():
-        features_df[feature] = _cap_outliers(features_df[feature], limits)
-
-    # Normalize data
-    features = info_dict["features"]
-    features_df = features_df[features]
-
-    # Initialise completely the scaler object
-    std_scaler = StandardScaler()
-
-    std_scaler.scale_ = np.array(info_dict["std_scaler_scale"])
-    std_scaler.mean_ = np.array(info_dict["std_scaler_mean"])
-    std_scaler.var_ = np.array(info_dict["std_scaler_var"])
-
-    features_arr = std_scaler.transform(features_df)
-    features_df = pd.DataFrame(features_arr, columns=features_df.columns)
-
-    ##########
+    # Scale the data using standard scaler
+    features_df = (features_df-data_dict["standard_scaler_mean"])/data_dict["standard_scaler_std"]
 
     # Make the prediction using the trained model
     prediction = model.predict(features_df)
 
     # Convert prediction result into string format
-    str_pred = "Tomorrow won't probably rain"
+    str_pred = "Healthy patient"
     if prediction[0] > 0:
-        str_pred = "Tomorrow will probably rain."
+        str_pred = "Heart disease detected"
 
     # Check if the model has changed asynchronously
     background_tasks.add_task(check_model)
 
     # Return the prediction result
-    return ModelOutput(int_output=int(prediction[0].item()), str_output=str_pred)
+    return ModelOutput(int_output=bool(prediction[0].item()), str_output=str_pred)

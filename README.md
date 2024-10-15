@@ -1,156 +1,112 @@
-# Proyecto final para Aprendizaje de Máquinas II.
-### CEIA - FIUBA
+# Ejemplo de Implementación de un Modelo de Heart Disease 
+### AMq2 - CEIA - FIUBA
 
-El proyecto aquí detallado se realizó como proyecto final de la asignatura **Aprendizaje de Máquinas II**, en la **Carrera de Especialización en Inteligencia Artificial** de la **Universidad de Buenos Aires**.
+En este ejemplo, mostramos una implementación de un modelo productivo para detectar si un 
+paciente tiene una enfermedad cardiaca o no, utilizando el servicio de 
+**ML Models and something more Inc.**. Para ello, obtenemos los datos de 
+[Heart Disease - UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/45/heart+disease).
 
-## Contexto
+La implementación incluye:
 
-Se trabaja para la empresa **ML Models and something more Inc.**, la cual ofrece un servicio que proporciona modelos mediante una REST API. Internamente, tanto para realizar tareas de DataOps como de MLOps, la empresa cuenta con varios servicios que ayudan a ejecutar las acciones necesarias. También dispone de un Data Lake en S3, para este caso, simularemos un S3 utilizando MinIO.
+- En Apache Airflow, un DAG que obtiene los datos del repositorio, realiza limpieza y 
+feature engineering, y guarda en el bucket `s3://data` los datos separados para entrenamiento 
+y pruebas. MLflow hace seguimiento de este procesamiento.
+- Una notebook para ejecutar localmente con Optuna, que realiza una búsqueda de 
+hiperparámetros y encuentra el mejor modelo utilizando F1-score. Todo el experimento se 
+registra en MLflow, se generan gráficos de importancia de características, y además, se 
+registra el modelo en el registro de modelos de MLflow.
+- Un servicio de API del modelo, que toma el artefacto de MLflow y lo expone para realizar 
+predicciones.
+- En Apache Airflow, un DAG que, dado un nuevo conjunto de datos, reentrena el modelo. Se 
+compara este modelo con el mejor modelo (llamado `champion`), y si es mejor, se reemplaza. Todo 
+se lleva a cabo siendo registrado en MLflow.
 
-## Arquitectura de la Implementación
+![Diagrama de servicios](example_project.png)
 
-Para simular esta empresa, utilizaremos Docker y, a través de Docker Compose, desplegaremos 
-varios contenedores que representan distintos servicios en un entorno productivo.
+Las flechas verdes y violetas representan nuevas conexiones en comparación con el proyecto base.
 
-![Diagrama de servicios](final_assign.png)
+## Testeo de Funcionamiento
 
-## Servicios Utilizados
+El orden para probar el funcionamiento completo es el siguiente:
 
-* [![MLflow][MLflow]][mlflow-url]
-* [![Apache Airflow][Apache-Airflow]][airflow-url]
-* [![MinIO][MinIO]][minio-url]
-* [![PostgreSQL][PostgreSQL]][postgresql-url]
-* [![FastAPI][FastAPI]][fastapi-url]
+1. Tan pronto como se levante el sistema multi-contenedor, ejecuta en Airflow el DAG 
+llamado `process_etl_heart_data`, de esta manera se crearán los datos en el 
+bucket `s3://data`.
+2. Ejecuta la notebook (ubicada en `notebook_example`) para realizar la búsqueda de 
+hiperparámetros y entrenar el mejor modelo.
+3. Utiliza el servicio de API.
 
-Por defecto, cuando se inician los multi-contenedores, se crean los siguientes buckets:
+Además, una vez entrenado el modelo, puedes ejecutar el DAG `retrain_the_model` para probar 
+un nuevo modelo que compita con el campeón. Antes de hacer esto, ejecuta el DAG 
+`process_etl_heart_data` para que el conjunto de datos sea nuevo, de lo contrario se entrenará 
+el mismo modelo. Este proceso siempre dará como resultado que el modelo inicial es mejor... 
+el motivo de esto se deja al lector para que comprenda lo que está sucediendo.
 
-- `s3://data`
-- `s3://mlflow` (usada por MLflow para guardar los artefactos).
+### API 
 
-y las siguientes bases de datos:
+Podemos realizar predicciones utilizando la API, accediendo a `http://localhost:8800/`.
 
-- `mlflow_db` (usada por MLflow).
-- `airflow` (usada por Airflow).
+Para hacer una predicción, debemos enviar una solicitud al endpoint `Predict` con un 
+cuerpo de tipo JSON que contenga un campo de características (`features`) con cada 
+entrada para el modelo.
 
-## Capturas del proyecto en ejecución 
-
-Este proyecto está implementado utilizando contenedores en Docker para facilitar su deployment. Las librerías necesarias se instalan al momento de levantar los contenedores del proyecto.
-
-**Docker desktop - Containers running**
-![Docker Desktop - Containers][containers]
-
-**Airflow webserver - DAGs**
-![Airflow webserver - DAGs][dags]
-
-**Airflow webserver - ETL graph**
-![Airflow webserver - ETL graph][airflow_etl]
-
-**Minio - Processed datasets**
-![Minio - Processed datasets][minio_dataset]
-
-**Jupyter notebook - Optuna experiment**
-![Jupyter notebook - Optuna experiment][jupyter_experiment]
-
-**Airflow webserver - Retrain graph**
-![Airflow webserver - Retrain graph][airflow_retrain]
-
-**MLflow - Experiments catalog**
-![MLflow - Experiments catalog][mlflow_experiments]
-
-**MLflow - Models catalog**
-![MLflow - Models catalog][mlflow_models]
-
-**Fast API - Inference**
-![Fast API - Inference][fastapi_inference]
-
-**Powershell terminal - Inference**
-![Powershell terminal - Inference][terminal_inference]
-
-## Instalación
-
-1. Para poder levantar todos los servicios, primero instala [Docker](https://docs.docker.com/engine/install/) en tu 
-computadora (o en el servidor que desees usar).
-
-2. Clona este repositorio.
-
-3. Crea las carpetas `airflow/config`, `airflow/dags`, `airflow/logs`, `airflow/plugins`, 
-`airflow/logs`.
-
-4. Si estás en Linux o MacOS, en el archivo `.env`, reemplaza `AIRFLOW_UID` por el de tu 
-usuario o alguno que consideres oportuno (para encontrar el UID, usa el comando 
-`id -u <username>`). De lo contrario, Airflow dejará sus carpetas internas como root y no 
-podrás subir DAGs (en `airflow/dags`) o plugins, etc.
-
-5. En la carpeta raíz de este repositorio, ejecuta:
+Un ejemplo utilizando `curl` sería:
 
 ```bash
-docker compose --profile all up
+curl -X 'POST' \
+  'http://localhost:8800/predict/' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "features": {
+    "age": 67,
+    "ca": 3,
+    "chol": 286,
+    "cp": 4,
+    "exang": 1,
+    "fbs": 0,
+    "oldpeak": 1.5,
+    "restecg": 2,
+    "sex": 1,
+    "slope": 2,
+    "thal": 3,
+    "thalach": 108,
+    "trestbps": 160
+  }
+}'
 ```
 
-6. Una vez que todos los servicios estén funcionando (verifica con el comando `docker ps -a` 
-que todos los servicios estén healthy o revisa en Docker Desktop), podrás acceder a los 
-diferentes servicios mediante:
-   - Apache Airflow: http://localhost:8080
-   - MLflow: http://localhost:5000
-   - MinIO: http://localhost:9000 (ventana de administración de Buckets)
-   - API: http://localhost:8800/
-   - Documentación de la API: http://localhost:8800/docs
+La respuesta del modelo será un valor booleano y un mensaje en forma de cadena de texto que 
+indicará si el paciente tiene o no una enfermedad cardiaca.
 
-Si estás usando un servidor externo a tu computadora de trabajo, reemplaza `localhost` por su IP 
-(puede ser una privada si tu servidor está en tu LAN o una IP pública si no; revisa firewalls 
-u otras reglas que eviten las conexiones).
-
-7. Para el entrenamiento del primer modelo de forma local es necesario levantar el entorno virtual
-utilizando el `pipfile` encontrado en `/notebook_experiments`. Para esto, debes ubicarte dentro del
-directorio mencionado con la terminal y ejecutar el siguiente comando:
-
-```bash
-pip install pipenv
-pipenv install
+```json
+{
+  "int_output": true,
+  "str_output": "Heart disease detected"
+}
 ```
 
-Si se desea utilizar un entorno virtual propio, verificar que la versión de scikit-learn se corresponda
-con la utilizada en airflow. (verificar la versión en `/dockerfiles/airflow/requirements.txt`)
+Para obtener más detalles sobre la API, ingresa a `http://localhost:8800/docs`.
 
-## Apagar los servicios
+Nota: Recuerda que si esto se ejecuta en un servidor diferente a tu computadora, debes reemplazar 
+`localhost` por la IP correspondiente o el dominio DNS, si corresponde.
 
-Estos servicios ocupan cierta cantidad de memoria RAM y procesamiento, por lo que cuando no 
-se están utilizando, se recomienda detenerlos. Para hacerlo, ejecuta el siguiente comando:
+Nota: Recordar que si esto se ejecuta en un servidor aparte de tu computadora, reemplazar a 
+localhost por la IP correspondiente o DNS domain si corresponde.
 
-```bash
-docker compose --profile all down
-```
+La forma en que se implementó tiene la desventaja de que solo se puede hacer una predicción a 
+la vez, pero tiene la ventaja de que FastAPI y Pydantic nos permiten tener un fuerte control 
+sobre los datos sin necesidad de agregar una línea de código adicional. FastAPI maneja toda 
+la validación.
 
-Si deseas no solo detenerlos, sino también eliminar toda la infraestructura (liberando espacio en disco), 
-utiliza el siguiente comando:
+Otra forma más típica es pasar los features como una lista u otro formato similar con 
+N observaciones y M features, lo que permite realizar varias predicciones al mismo tiempo. 
+Sin embargo, se pierde la validación automática.
 
-```bash
-docker compose down --rmi all --volumes
-```
+## Nota Final
 
-Nota: Si haces esto, perderás todo en los buckets y bases de datos.
+Si desean utilizar este proyecto como base para su propia implementación, es válido. 
+Además, podrían agregar un frontend que se comunique con la API para mejorar la experiencia 
+de usuario.
 
-<!-- MARKDOWN LINKS & images -->
-<!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
-[containers]: screenshots/02_docker_desktop_containers.png
-[dags]: screenshots/03_airflow_pre_run.png
-[airflow_etl]: screenshots/03_airflow_run_etl.png
-[minio_dataset]: screenshots/04_minio_etl_datasets.png
-[jupyter_experiment]: screenshots/06_notebook_experiment.png
-[airflow_retrain]: screenshots/08_airflow_run_retrain.png
-[mlflow_experiments]: screenshots/09_mlflow_catalog.png
-[mlflow_models]: screenshots/11_mlflow_models.png
-[fastapi_inference]: screenshots/14_fastapi_inference.png
-[terminal_inference]: screenshots/15_powershell_inference.png
-
-
-[MLflow]: https://img.shields.io/badge/MLflow-0194E2?style=for-the-badge&logo=MLflow&logoColor=white
-[mlflow-url]: https://mlflow.org/
-[Apache-Airflow]: https://img.shields.io/badge/Airflow-017CEE?style=for-the-badge&logo=Apache%20Airflow&logoColor=white
-[airflow-url]: https://airflow.apache.org/
-[MinIO]: https://img.shields.io/badge/MinIO-C72E49?style=for-the-badge&logo=MinIO&logoColor=white
-[minio-url]: https://min.io
-[PostgreSQL]: https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white
-[postgresql-url]: https://www.postgresql.org/
-[FastAPI]: https://img.shields.io/badge/fastapi-109989?style=for-the-badge&logo=FASTAPI&logoColor=white
-[fastapi-url]: https://fastapi.tiangolo.com/
+También, si desean mejorar este ejemplo, ¡los Pull Requests son bienvenidos!
